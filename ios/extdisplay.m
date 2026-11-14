@@ -71,20 +71,47 @@ UIView *s2a_ios_present_view(void) {
 }
 @end
 
+// SDK 26（Xcode 26.x）里没有 UISceneAccessory / UISceneAccessoryRegistration 这些声明，只有 Xcode 27 才有。
+//   这类机器上编译时走运行时反射调同一条 OC 消息：能编过 SDK 26，设备是 iOS 27 时照常登记外接屏场景配件；
+//   设备上没有这些类 / 选择器就返回 nil，外接屏退回系统镜像（与 iOS 27 以下的行为一致）。
+#if !defined(__IPHONE_27_0) || __IPHONE_OS_VERSION_MAX_ALLOWED < __IPHONE_27_0
+static id ext_register_dynamic(UIViewController *vc) {
+    Class accessory = NSClassFromString(@"UISceneAccessory");
+    SEL makeSel = NSSelectorFromString(@"externalNonInteractiveSceneAccessoryWithConfiguration:");
+    SEL regSel = NSSelectorFromString(@"registerSceneAccessory:");
+    if (!accessory || ![accessory respondsToSelector:makeSel] || ![vc respondsToSelector:regSel]) return nil;
+    UISceneConfiguration *cfg = [[UISceneConfiguration alloc] initWithName:nil sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
+    cfg.delegateClass = S2AExternalSceneDelegate.class;
+    id (*make)(id, SEL, id) = (id (*)(id, SEL, id))[accessory methodForSelector:makeSel];
+    id (*reg)(id, SEL, id) = (id (*)(id, SEL, id))[(id)vc methodForSelector:regSel];
+    id acc = make ? make(accessory, makeSel, cfg) : nil;
+    id r = (acc && reg) ? reg(vc, regSel, acc) : nil;
+    if (r) {
+        @try {
+            BOOL enabled = [[r valueForKey:@"enabled"] boolValue], available = [[r valueForKey:@"available"] boolValue];
+            LOG("外接屏：场景配件已登记（启用 %d，显示器可用 %d）", (int)enabled, (int)available);
+        } @catch (NSException *e) {
+            LOG("外接屏：场景配件已登记（读不到启用状态：%s）", e.reason.UTF8String ?: "?");
+        }
+    }
+    return r;
+}
+#endif
+
 // 游戏界面控制器建好时登记外接屏场景配件（主线程）。返回登记对象，由控制器持有（控制器放掉 = 登记跟着没）；iOS 27 以下 / 不接管返回 nil
 id s2a_ios_ext_register(UIViewController *vc) {
     if (!vc || !ext_on()) return nil;
-#if defined(__IPHONE_27_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_27_0
     if (@available(iOS 27.0, *)) {
+#if defined(__IPHONE_27_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_27_0
         // 委托类写在代码里、不取配置名：Info.plist 里不用声明外接屏场景
         UISceneConfiguration *cfg = [[UISceneConfiguration alloc] initWithName:nil sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
         cfg.delegateClass = S2AExternalSceneDelegate.class;
         UISceneAccessoryRegistration *reg = [vc registerSceneAccessory:[UISceneAccessory externalNonInteractiveSceneAccessoryWithConfiguration:cfg]];
         LOG("外接屏：场景配件已登记（启用 %d，显示器可用 %d）", (int)reg.enabled, (int)reg.available);
         return reg;
-    }
 #else
-    (void)vc;   // 这套 SDK 没有场景配件接口（Xcode 26.x）：外接屏退回系统镜像
+        return ext_register_dynamic(vc);   // SDK 26 编的壳：反射走同一条路
 #endif
+    }
     return nil;
 }
