@@ -1,0 +1,78 @@
+# 给没有 Mac 的贡献者：用 GitHub Actions 的 macOS runner 出一份「预编壳」，
+# 拿回 Windows 上出包（Windows 出包时会用 --shell / Resources/Shell 这份壳）。
+#
+# 用法：
+#   1. 把本文件放到你 fork 的 .github/workflows/shell.yml（上游仓库不需要它，提 PR 前可以不带）
+#   2. Actions → shell → Run workflow，选你的分支（feat/ios-p1-gcmotion）
+#   3. 跑完下载 artifact「shell-<commit>」，解压出 shell/ 目录（里面有 manifest.json 和 root/）
+#   4. Windows 上二选一：
+#      a) 备份并替换启动器的 Shell/：<安装目录>\Shell  ← 解压出的 shell 目录内容
+#      b) 命令行出包时给壳：python -m pack.orch.oneclick_win <游戏文件夹> --shell <解压出的 shell 目录> --out <输出目录>
+#
+# 注意：
+#   - tools/toolchain.env 把 IPHONEOS_SDK_MAJOR 钉成 27（算进壳编号）。runner 的 Xcode 主版本对不上时，
+#     这里会把它改成 runner 的实际主版本并做一次 CI 提交——只影响这次跑，不回到你的分支。
+#   - 出壳脚本要求「壳输入表里的文件没有未提交改动」，所以这一步的提交是必须的。
+name: shell
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/**']
+permissions:
+  contents: read
+jobs:
+  shell:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: compat/tree/global.json
+      - name: 依赖（bash 5 / GNU make / Python 包）
+        run: |
+          brew install bash make
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "$pythonLocation/bin" >> "$GITHUB_PATH"
+          python3 -m pip install -r tools/rewriter-requirements.txt -r pack/fonts/requirements.txt
+      - name: NuGet 预取（离线门禁要的包）
+        run: python3 tools/nuget_prefetch.py launchers/windows/launcher
+      - name: 选最新的 Xcode
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          XC=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: 对齐 SDK 主版本（仅当 runner 与仓库钉的不一致）
+        run: |
+          SDKV=$(xcrun --sdk iphoneos --show-sdk-version)
+          MAJ=${SDKV%%.*}
+          PIN=$(awk -F= '$1=="IPHONEOS_SDK_MAJOR"{print $2}' tools/toolchain.env)
+          echo "runner SDK $SDKV / 仓库钉 $PIN"
+          if [ "$MAJ" != "$PIN" ]; then
+            sed -i '' "s/^IPHONEOS_SDK_MAJOR=.*/IPHONEOS_SDK_MAJOR=$MAJ/" tools/toolchain.env
+            git -c user.email=ci@local -c user.name=ci commit -am "ci: IPHONEOS_SDK_MAJOR=$MAJ (runner SDK $SDKV)"
+          fi
+      - name: 出壳
+        run: bash pack/shell_build.sh "$RUNNER_TEMP/shell"
+      - name: 壳清单摘要
+        run: |
+          python3 - <<'PY'
+          import json, os
+          m = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "shell", "manifest.json"), encoding="utf-8"))
+          print("shellId:", m["details"]["shellId"])
+          print("sourceCommit:", m["details"].get("sourceCommit"))
+          print("iosSdk:", m["details"].get("iosSdk"), "chain:", m["details"].get("chain"))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-${{ github.sha }}
+          path: ${{ runner.temp }}/shell
+          retention-days: 7
