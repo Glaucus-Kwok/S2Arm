@@ -74,6 +74,7 @@ UIView *s2a_ios_present_view(void) {
 // 游戏界面控制器建好时登记外接屏场景配件（主线程）。返回登记对象，由控制器持有（控制器放掉 = 登记跟着没）；iOS 27 以下 / 不接管返回 nil
 id s2a_ios_ext_register(UIViewController *vc) {
     if (!vc || !ext_on()) return nil;
+#if defined(__IPHONE_27_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_27_0
     if (@available(iOS 27.0, *)) {
         // 委托类写在代码里、不取配置名：Info.plist 里不用声明外接屏场景
         UISceneConfiguration *cfg = [[UISceneConfiguration alloc] initWithName:nil sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
@@ -82,5 +83,8 @@ id s2a_ios_ext_register(UIViewController *vc) {
         LOG("外接屏：场景配件已登记（启用 %d，显示器可用 %d）", (int)reg.enabled, (int)reg.available);
         return reg;
     }
+#else
+    (void)vc;   // 这套 SDK 没有场景配件接口（Xcode 26.x）：外接屏退回系统镜像
+#endif
     return nil;
 }
